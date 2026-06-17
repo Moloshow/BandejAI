@@ -12,7 +12,7 @@ Mathematical formulation:
 
 where c is a scaling factor to normalize the homogeneous coordinate back to 1.
 
-Status: Phase 0 (skeleton). Implementation deferred to Phase 1.
+Status: Phase 1A (implemented & tested).
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 
@@ -34,8 +35,23 @@ class CourtProjector:
     """Projects image-space pixel coordinates onto a 2D padel court model.
 
     The court model uses a coordinate system in meters, with the origin at
-    the center of the baseline (outside the glass wall). The x-axis runs
-    along the baseline, the y-axis runs toward the net.
+    the **left corner of the near baseline**. The x-axis runs along the
+    baseline (0 to COURT_WIDTH_M), the y-axis runs toward the far baseline
+    (0 to COURT_LENGTH_M).
+
+    Coordinate system (bird's-eye view, full court)::
+
+        x=0   x=5   x=10
+         |     |     |
+        [12]--[13]-[14]  y=20    (far baseline)
+         |     |     |
+         [9]--[10]-[11]  y=16.95 (far service line)
+         |     |     |
+         [6]--[ 7]-[ 8]  y=10    (net)
+         |     |     |
+         [3]--[ 4]-[ 5]  y=3.05  (near service line)
+         |     |     |
+         [0]--[ 1]-[ 2]  y=0     (near baseline)
 
     Attributes:
         homography: 3x3 homography matrix mapping image -> court.
@@ -50,8 +66,12 @@ class CourtProjector:
     COURT_LENGTH_M: ClassVar[float] = 20.0
     NET_HEIGHT_M: ClassVar[float] = 0.88
 
-    # Expected number of keypoints for manual annotation
-    NUM_KEYPOINTS: ClassVar[int] = 12
+    # Service line distances from each baseline (FIP regulations), in meters
+    # The service box is 6.95m from the net, so from the baseline it's 10 - 6.95 = 3.05m
+    SERVICE_LINE_DIST_M: ClassVar[float] = 3.05
+
+    # Expected number of keypoints for manual annotation (5 rows x 3 columns)
+    NUM_KEYPOINTS: ClassVar[int] = 15
 
     def __init__(self) -> None:
         """Initialize the projector without a homography matrix."""
@@ -69,6 +89,60 @@ class CourtProjector:
     def is_calibrated(self) -> bool:
         """Return True if the homography matrix has been computed."""
         return self._homography is not None
+
+    @property
+    def court_keypoints_template(self) -> NDArray[np.float64]:
+        """Return the 15 standard court keypoints in meters (court-space).
+
+        These are the real-world coordinates (x, y) of the 15 line
+        intersections used for manual annotation. The user must click the
+        corresponding pixel positions in the image.
+
+        Returns:
+            Array of shape (15, 2) with court-space coordinates in meters.
+
+        Keypoint indices (see class docstring for visual layout)::
+
+              0: Near baseline left      ( 0.0,  0.00)
+              1: Near baseline center    ( 5.0,  0.00)
+              2: Near baseline right    (10.0,  0.00)
+              3: Near service line left  ( 0.0,  3.05)
+              4: Near service line center( 5.0,  3.05)
+              5: Near service line right (10.0,  3.05)
+              6: Net left                ( 0.0, 10.00)
+              7: Net center              ( 5.0, 10.00)
+              8: Net right              (10.0, 10.00)
+              9: Far service line left   ( 0.0, 16.95)
+             10: Far service line center ( 5.0, 16.95)
+             11: Far service line right  (10.0, 16.95)
+             12: Far baseline left       ( 0.0, 20.00)
+             13: Far baseline center     ( 5.0, 20.00)
+             14: Far baseline right     (10.0, 20.00)
+
+        """
+        w = self.COURT_WIDTH_M
+        length = self.COURT_LENGTH_M
+        s = self.SERVICE_LINE_DIST_M
+        return np.array(
+            [
+                [0.0, 0.0],  # 0: Near baseline left
+                [w / 2, 0.0],  # 1: Near baseline center
+                [w, 0.0],  # 2: Near baseline right
+                [0.0, s],  # 3: Near service line left
+                [w / 2, s],  # 4: Near service line center
+                [w, s],  # 5: Near service line right
+                [0.0, length / 2],  # 6: Net left
+                [w / 2, length / 2],  # 7: Net center
+                [w, length / 2],  # 8: Net right
+                [0.0, length - s],  # 9: Far service line left
+                [w / 2, length - s],  # 10: Far service line center
+                [w, length - s],  # 11: Far service line right
+                [0.0, length],  # 12: Far baseline left
+                [w / 2, length],  # 13: Far baseline center
+                [w, length],  # 14: Far baseline right
+            ],
+            dtype=np.float64,
+        )
 
     # ------------------------------------------------------------------ #
     # Calibration
@@ -93,10 +167,6 @@ class CourtProjector:
                        mismatch.
             RuntimeError: If OpenCV fails to compute a valid homography.
 
-        Todo:
-            - Phase 1: Implement using cv2.findHomography(image, court, RANSAC).
-            - Add validation that court_points lie within court bounds.
-
         """
         if len(image_points) < 4 or len(court_points) < 4:
             raise ValueError(
@@ -108,10 +178,31 @@ class CourtProjector:
                 f"Shape mismatch: image={image_points.shape}, court={court_points.shape}"
             )
 
-        # TODO(Phase 1): H, mask = cv2.findHomography(image_points, court_points, cv2.RANSAC, 5.0)
-        # TODO(Phase 1): Validate H is not None
-        # TODO(Phase 1): self._homography = H
-        logger.warning("compute_homography() not yet implemented (Phase 1 TODO)")
+        # Convert to float32 for OpenCV
+        img_pts = np.asarray(image_points, dtype=np.float32)
+        crt_pts = np.asarray(court_points, dtype=np.float32)
+
+        # Compute homography with RANSAC.
+        # We compute H_inv (court -> image) first to minimize error in pixel space,
+        # which is essential for accurate visual projection at the near baseline.
+        # Here, the threshold 5.0 is correctly interpreted as 5.0 pixels.
+        H_inv, mask = cv2.findHomography(crt_pts, img_pts, cv2.RANSAC, 5.0)
+
+        if H_inv is None:
+            raise RuntimeError(
+                "cv2.findHomography failed to compute a valid matrix. "
+                "Check that the point correspondences are non-degenerate "
+                "(no 3 points collinear)."
+            )
+
+        self._homography = np.linalg.inv(H_inv).astype(np.float64)
+
+        inliers = int(mask.sum()) if mask is not None else len(img_pts)
+        logger.info(
+            "Homography computed: %d/%d points are inliers",
+            inliers,
+            len(img_pts),
+        )
 
     # ------------------------------------------------------------------ #
     # Projection
@@ -128,18 +219,14 @@ class CourtProjector:
         Raises:
             RuntimeError: If the homography has not been computed yet.
 
-        Todo:
-            - Phase 1: Implement using cv2.perspectiveTransform.
-
         """
-        if not self.is_calibrated:
+        if not self.is_calibrated or self._homography is None:
             raise RuntimeError("Homography not computed. Call compute_homography() first.")
 
-        # TODO(Phase 1): point = np.array([[image_point]], dtype=np.float64)
-        # TODO(Phase 1): court = cv2.perspectiveTransform(point, self._homography)
-        # TODO(Phase 1): return court[0, 0]
-        logger.warning("project_point() not yet implemented (Phase 1 TODO)")
-        return np.zeros(2, dtype=np.float64)
+        H = self._homography  # type narrowing for mypy/pyright
+        point = np.array([[image_point]], dtype=np.float32)
+        court = cv2.perspectiveTransform(point, H)
+        return court[0, 0].astype(np.float64)
 
     def project_points(self, image_points: NDArray[np.float64]) -> NDArray[np.float64]:
         """Project multiple image-space points to 2D court-space.
@@ -153,18 +240,14 @@ class CourtProjector:
         Raises:
             RuntimeError: If the homography has not been computed yet.
 
-        Todo:
-            - Phase 1: Implement using cv2.perspectiveTransform (batched).
-
         """
-        if not self.is_calibrated:
+        if not self.is_calibrated or self._homography is None:
             raise RuntimeError("Homography not computed. Call compute_homography() first.")
 
-        # TODO(Phase 1): points = image_points.reshape(-1, 1, 2).astype(np.float64)
-        # TODO(Phase 1): court = cv2.perspectiveTransform(points, self._homography)
-        # TODO(Phase 1): return court.reshape(-1, 2)
-        logger.warning("project_points() not yet implemented (Phase 1 TODO)")
-        return np.zeros_like(image_points, dtype=np.float64)
+        H = self._homography  # type narrowing for mypy/pyright
+        points = np.asarray(image_points, dtype=np.float32).reshape(-1, 1, 2)
+        court = cv2.perspectiveTransform(points, H)
+        return court.reshape(-1, 2).astype(np.float64)
 
     def project_bounding_box_bottom(self, bbox: NDArray[np.float64]) -> CourtPoint:
         """Project the bottom-center of a bounding box to court-space.
@@ -179,13 +262,7 @@ class CourtProjector:
         Returns:
             Array of shape (2,) with court-space coordinates (x, y) in meters.
 
-        Todo:
-            - Phase 1: Extract bottom-center: (x1+x2)/2, y2
-            - Phase 1: Call self.project_point().
-
         """
-        # TODO(Phase 1): x1, y1, x2, y2 = bbox
-        # TODO(Phase 1): bottom_center = np.array([(x1 + x2) / 2, y2], dtype=np.float64)
-        # TODO(Phase 1): return self.project_point(bottom_center)
-        logger.warning("project_bounding_box_bottom() not yet implemented (Phase 1 TODO)")
-        return np.zeros(2, dtype=np.float64)
+        x1, y1, x2, y2 = bbox
+        bottom_center = np.array([(x1 + x2) / 2, y2], dtype=np.float64)
+        return self.project_point(bottom_center)
