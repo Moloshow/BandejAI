@@ -39,6 +39,11 @@ ignore = [
     "E501",  # line too long (handled by formatter)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"core_math/homography/*.py" = ["N806"]
+"examples/demo_homography.py" = ["N806"]
+"vision/**/*.py" = ["N806"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["vision", "audio", "core_math", "llm_coach", "utils"]
 

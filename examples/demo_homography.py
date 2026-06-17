@@ -106,7 +106,7 @@ class HomographyDemo:
         self.court_template = self.projector.court_keypoints_template[self.active_indices]
         self.num_points = len(self.active_indices)
 
-    def run(self) -> None:
+    def run(self, auto_close: bool = False) -> None:
         """Run the interactive calibration loop."""
         cv2.namedWindow(self.WINDOW_IMAGE, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(self.WINDOW_IMAGE, self._mouse_callback)
@@ -122,6 +122,9 @@ class HomographyDemo:
                 break
             elif key == ord("r"):
                 self._reset()
+
+            if auto_close and self.projector.is_calibrated:
+                break
 
         cv2.destroyAllWindows()
 
@@ -194,6 +197,14 @@ class HomographyDemo:
 
         logger.info("Homography computed successfully!")
 
+        print("\n" + "="*40)
+        print("YAML Config for --config (copy-paste):")
+        print(f"points_mode: {self.num_points}")
+        print("image_points:")
+        for pt in self.clicked_points:
+            print(f"  - [{pt[0]}, {pt[1]}]")
+        print("="*40 + "\n")
+
         # Draw court overlay on the image
         self._draw_court_overlay()
 
@@ -250,7 +261,8 @@ class HomographyDemo:
 
         def court_to_img(x_m: float, y_m: float) -> tuple[int, int]:
             """Convert court-space (meters) to bird's-eye image pixels."""
-            return int(margin + x_m * scale), int(margin + y_m * scale)
+            # Invert Y so near baseline (y=0) is at the bottom of the minimap
+            return int(margin + x_m * scale), int(margin + (self.projector.COURT_LENGTH_M - y_m) * scale)
 
         # Draw court background (green)
         p1 = court_to_img(0, 0)

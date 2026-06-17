@@ -141,8 +141,31 @@ class CourtProjector:
                 [w / 2, length],  # 13: Far baseline center
                 [w, length],  # 14: Far baseline right
             ],
-            dtype=np.float64,
         )
+
+    def get_template(self, mode: int = 15) -> NDArray[np.float64]:
+        """Get the court keypoints template for a specific configuration mode.
+
+        Args:
+            mode: Number of keypoints (15=full, 12=intersections, 10=edges, 6=corners+net, 4=corners).
+
+        Returns:
+            Array of shape (mode, 2) containing the court coordinates in meters.
+        """
+        if mode == 15:
+            indices = list(range(15))
+        elif mode == 12:
+            indices = [0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 14]
+        elif mode == 10:
+            indices = [0, 2, 3, 5, 6, 8, 9, 11, 12, 14]
+        elif mode == 6:
+            indices = [0, 2, 6, 8, 12, 14]
+        elif mode == 4:
+            indices = [0, 2, 12, 14]
+        else:
+            raise ValueError(f"Unsupported points mode: {mode}")
+
+        return self.court_keypoints_template[indices]
 
     # ------------------------------------------------------------------ #
     # Calibration
