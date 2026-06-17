@@ -35,7 +35,9 @@ graph TD
 
     VisionPipeline --> YOLO["YOLOv8 + SceneDetect<br/>(player tracking) 🟢"]
     VisionPipeline --> TrackNet["TrackNetV5<br/>(ball tracking) 🔴"]
-    VisionPipeline --> PoseC3D["PoseC3D + RGB<br/>(action recognition) 🔴"]
+    
+    YOLO --> ViTPose["ViTPose-L<br/>(pose estimation) 🔴"]
+    ViTPose --> PoseC3D["PoseC3D + RGB<br/>(action recognition) 🔴"]
 
     AudioPipeline --> HighPass["High-pass filter<br/>(10 kHz) 🔴"]
     HighPass --> EMAPeak["EMA peak detection 🔴"]
@@ -59,6 +61,7 @@ graph TD
 ### 1. Computer Vision & Deep Learning
 - 🟢 **Scene Detection** - Automated extraction of actual gameplay rallies from full broadcast matches using `PySceneDetect`, filtering out dead time.
 - 🟢 **Player tracking** - Bounding-box detection with YOLOv8 paired with ByteTrack. Includes a custom `PlayerMerger` that locks identities to specific court sides, and a `TrajectorySmoother` (Pandas-based) that interpolates missing detections when players are occluded by the back court glass/mesh.
+- 🔴 **Pose estimation** - High-fidelity 13-DoF skeleton extraction via **ViTPose-L** (or YOLO-Pose). This is a prerequisite for understanding player biomechanics and feeding the action recognition network.
 - 🔴 **Ball tracking** - Spatio-temporal detection using **TrackNetV5**, which ingests a 3-frame sliding window and predicts Gaussian heatmaps instead of bounding boxes. This is critical for surviving motion blur and complex glass/mesh backgrounds.
 - 🔴 **Action recognition** - Fine-grained stroke classification (*Bandeja*, *Vibora*, *Chiquita*) using a **PoseC3D** network enhanced with **RGB Early-Fusion**, capturing both body kinematics and racket-head angles that pure skeleton graphs (ST-GCN) miss.
 
