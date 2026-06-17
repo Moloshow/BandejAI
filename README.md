@@ -10,6 +10,10 @@
   </p>
 </p>
 
+<p align="center">
+  <img src="assets/bandejai_example.gif" alt="BandejAI HD Dashboard Example" width="800">
+</p>
+
 > **Status: Alpha.** The core 2D Player Tracking and Homography pipeline is fully implemented. Ball tracking and advanced features are currently under development.
 
 ---
