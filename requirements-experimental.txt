@@ -1,0 +1,23 @@
+# ============================================================
+# BandejAI / Padelytics - Experimental / Phase 3+ dependencies
+# ============================================================
+# These packages are heavy and/or have fragile build chains
+# (e.g. chumpy via mmpose breaks on recent setuptools).
+# They are NOT required for the MVP Phases 0-2 (homography,
+# player tracking, basic kinematics).
+#
+# Install only when working on action recognition or YAMNet:
+#   pip install -r requirements-experimental.txt
+# ============================================================
+
+# --- Pose estimation (Phase 3: action recognition) ---
+mmpose>=1.2.0               # ViTPose integration
+mmaction2>=1.2.0            # PoseC3D foundations
+
+# --- Audio classification (Phase 3: surface classification) ---
+tensorflow>=2.15.0          # YAMNet-256 inference (CPU/GPU)
+
+# --- Quantized LLM inference (Phase 5: Virtual Coach) ---
+# Optional alternative to transformers for GGUF models.
+# Requires a C++ build toolchain (CMake + MSVC on Windows).
+llama-cpp-python>=0.2.0     # Quantized GGUF LLM inference

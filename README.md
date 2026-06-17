@@ -138,17 +138,37 @@ BandejAI/
 
 ### Setup
 
+> **Recommended: use a dedicated Conda environment.**
+> PyTorch with CUDA must be installed first, from its official index,
+> otherwise pip will pull the CPU-only build.
+
 ```bash
+# 1. Clone
 git clone https://github.com/Moloshow/BandejAI.git
 cd BandejAI
-python -m venv venv
 
-# Windows
-venv\Scripts\activate
-# macOS / Linux
-source venv/bin/activate
+# 2. Create & activate the Conda environment
+conda create -n bandejai python=3.10 -y
+conda activate bandejai
 
+# 3. Install PyTorch with CUDA (adjust cu121 -> your CUDA version)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# 4. Install runtime + dev dependencies
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# 5. Configure environment
+copy .env.example .env   # Windows
+# cp .env.example .env   # macOS / Linux
+```
+
+### Verify the installation
+
+```bash
+python -c "import torch; print('CUDA:', torch.cuda.is_available())"
+pytest                  # should pass (fast unit tests only)
+ruff check .            # should report no issues
 ```
 
 > Model weights (YOLOv8, TrackNetV5, ViTPose, PoseC3D, YAMNet-256) are not bundled. A download script will be provided in a future release. For now, follow the per-module instructions in `vision/`, `audio/`, and `llm_coach/`.

@@ -1,0 +1,44 @@
+# ============================================================
+# BandejAI / Padelytics - Core runtime dependencies
+# ============================================================
+# Target: Python 3.10+, NVIDIA CUDA GPU (tested on RTX 3080 Ti 12GB)
+# Install:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+#
+# Heavy/optional deps (mmpose, mmaction2, tensorflow) are in
+# requirements-experimental.txt and only needed for Phase 3+.
+# ============================================================
+
+# --- Core scientific stack ---
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0
+pandas>=2.0.0
+
+# --- Deep Learning & Computer Vision (core) ---
+# PyTorch with CUDA support (install separately via official index):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1.0
+torchvision>=0.16.0
+opencv-python>=4.8.0
+ultralytics>=8.1.0          # YOLOv8 player detection
+
+# --- Audio processing ---
+librosa>=0.10.0             # Audio loading & Mel spectrograms
+soundfile>=0.12.0           # Audio I/O backend for librosa
+
+# --- Signal filtering & tracking ---
+filterpy>=1.4.5             # Kalman filter for trajectory smoothing
+
+# --- LLM coaching layer ---
+pydantic>=2.5.0             # Structured output schemas
+pydantic-settings>=2.1.0    # Environment-based configuration
+transformers>=4.36.0        # Local LLM inference
+
+# --- Video & I/O ---
+ffmpeg-python>=0.2.0        # ffmpeg subprocess wrapper
+
+# --- Utilities ---
+tqdm>=4.66.0                # Progress bars
+rich>=13.7.0                # Pretty terminal output
+jaxtyping>=0.2.0            # Tensor shape type hints

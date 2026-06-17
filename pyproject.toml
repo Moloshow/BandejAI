@@ -1,0 +1,107 @@
+[project]
+name = "bandejai"
+version = "0.0.1"
+description = "BandejAI - Open-source single-camera tactical & statistical analysis for padel"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Moloshow" },
+]
+keywords = ["padel", "computer-vision", "sports-analytics", "pose-estimation", "llm"]
+
+[project.urls]
+Homepage = "https://github.com/Moloshow/BandejAI"
+Repository = "https://github.com/Moloshow/BandejAI"
+Issues = "https://github.com/Moloshow/BandejAI/issues"
+
+# ============================================================
+# Ruff - Linter & Formatter
+# ============================================================
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "N",    # pep8-naming
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["vision", "audio", "core_math", "llm_coach", "utils"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ============================================================
+# Mypy - Static type checking
+# ============================================================
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+exclude = "notebooks/"
+
+# Relax strictness for heavy external libs
+[[tool.mypy.overrides]]
+module = [
+    "cv2.*",
+    "torch.*",
+    "ultralytics.*",
+    "librosa.*",
+    "filterpy.*",
+    "mmaction.*",
+    "mmpose.*",
+]
+ignore_missing_imports = true
+
+# ============================================================
+# Pytest
+# ============================================================
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "-m", "not gpu and not slow",
+]
+
+markers = [
+    "gpu: tests requiring CUDA GPU",
+    "slow: tests taking more than 5 seconds",
+    "integration: tests with real external dependencies",
+]
+
+[tool.coverage.run]
+source = ["vision", "audio", "core_math", "llm_coach", "utils"]
+omit = ["tests/*", "notebooks/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+]
