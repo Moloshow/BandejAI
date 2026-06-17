@@ -47,7 +47,7 @@ def main() -> None:
         )
     print("=" * 40 + "\n")
 
-    logger.info("You can now run demo_tracking_2d.py using the start frames of these rallies!")
+    logger.info("You can now run main.py to process this video!")
 
 
 if __name__ == "__main__":

@@ -47,7 +47,7 @@ COLOR_YELLOW = (0, 255, 255)
 COLOR_WHITE = (255, 255, 255)
 
 
-class HomographyDemo:
+class HomographyUI:
     """Interactive tool for calibrating and testing court homography."""
 
     WINDOW_IMAGE: ClassVar[str] = "Click keypoints (q=quit, r=reset)"
@@ -371,7 +371,7 @@ def main() -> None:
         image = extract_frame_from_video(args.video, args.frame)
 
     logger.info("Image loaded: %dx%d", image.shape[1], image.shape[0])
-    demo = HomographyDemo(image, points_mode=args.points)
+    demo = HomographyUI(image, points_mode=args.points)
     demo.run()
 
 

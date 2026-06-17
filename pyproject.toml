@@ -41,7 +41,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "core_math/homography/*.py" = ["N806"]
-"examples/demo_homography.py" = ["N806"]
 "vision/**/*.py" = ["N806"]
 
 [tool.ruff.lint.isort]

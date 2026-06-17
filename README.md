@@ -10,7 +10,7 @@
   </p>
 </p>
 
-> **Status: Pre-alpha.** This project is under active design. No code is implemented yet. This README describes the intended architecture.
+> **Status: Alpha.** The core 2D Player Tracking and Homography pipeline is fully implemented. Ball tracking and advanced features are currently under development.
 
 ---
 
@@ -30,23 +30,23 @@ BandejAI separates concerns across **three isolated layers**: extraction (deep l
 graph TD
     Video[Video Match Input]
 
-    Video --> VisionPipeline[Vision Pipeline]
-    Video --> AudioPipeline[Audio Pipeline]
+    Video --> VisionPipeline[Vision Pipeline 🟢]
+    Video --> AudioPipeline[Audio Pipeline 🔴]
 
-    VisionPipeline --> YOLO["YOLOv8<br/>(player tracking)"]
-    VisionPipeline --> TrackNet["TrackNetV5<br/>(ball tracking)"]
-    VisionPipeline --> PoseC3D["PoseC3D + RGB<br/>(action recognition)"]
+    VisionPipeline --> YOLO["YOLOv8 + SceneDetect<br/>(player tracking) 🟢"]
+    VisionPipeline --> TrackNet["TrackNetV5<br/>(ball tracking) 🔴"]
+    VisionPipeline --> PoseC3D["PoseC3D + RGB<br/>(action recognition) 🔴"]
 
-    AudioPipeline --> HighPass["High-pass filter<br/>(10 kHz)"]
-    HighPass --> EMAPeak["EMA peak detection"]
-    EMAPeak --> YAMNet["YAMNet-256<br/>(surface classification)"]
+    AudioPipeline --> HighPass["High-pass filter<br/>(10 kHz) 🔴"]
+    HighPass --> EMAPeak["EMA peak detection 🔴"]
+    EMAPeak --> YAMNet["YAMNet-256<br/>(surface classification) 🔴"]
 
-    YOLO --> Kinematics[Homography & Kinematics Engine]
+    YOLO --> Kinematics[Homography & Kinematics Engine 🟠]
     TrackNet --> Kinematics
     YAMNet --> Kinematics
 
-    Kinematics --> StructJSON["Structured JSON<br/>(Pydantic-validated)"]
-    StructJSON --> LLM["Local LLM<br/>(constrained decoding)"]
+    Kinematics --> StructJSON["Structured JSON<br/>(Pydantic-validated) 🔴"]
+    StructJSON --> LLM["Local LLM<br/>(constrained decoding) 🔴"]
     LLM --> Output[Padelytics Final Insights]
 ```
 
@@ -54,22 +54,23 @@ graph TD
 
 ## Core Features
 
+> 🟢 **Fully Implemented** | 🟠 **Work In Progress** | 🔴 **Pending / Planned**
+
 ### 1. Computer Vision & Deep Learning
-- **Player tracking** - Bounding-box detection with YOLOv8 paired with identity tracking (ByteTrack / DeepSORT). High-fidelity skeleton extraction (13 DoF) via ViTPose.
-- **Ball tracking** - Spatio-temporal detection using **TrackNetV5**, which ingests a 3-frame sliding window and predicts Gaussian heatmaps instead of bounding boxes. This is critical for surviving motion blur and complex glass/mesh backgrounds.
-- **Action recognition** - Fine-grained stroke classification (*Bandeja*, *Vibora*, *Chiquita*) using a **PoseC3D** network enhanced with **RGB Early-Fusion**, capturing both body kinematics and racket-head angles that pure skeleton graphs (ST-GCN) miss.
+- 🟢 **Scene Detection** - Automated extraction of actual gameplay rallies from full broadcast matches using `PySceneDetect`, filtering out dead time.
+- 🟢 **Player tracking** - Bounding-box detection with YOLOv8 paired with ByteTrack. Includes a custom `PlayerMerger` that locks identities to specific court sides, and a `TrajectorySmoother` (Pandas-based) that interpolates missing detections when players are occluded by the back court glass/mesh.
+- 🔴 **Ball tracking** - Spatio-temporal detection using **TrackNetV5**, which ingests a 3-frame sliding window and predicts Gaussian heatmaps instead of bounding boxes. This is critical for surviving motion blur and complex glass/mesh backgrounds.
+- 🔴 **Action recognition** - Fine-grained stroke classification (*Bandeja*, *Vibora*, *Chiquita*) using a **PoseC3D** network enhanced with **RGB Early-Fusion**, capturing both body kinematics and racket-head angles that pure skeleton graphs (ST-GCN) miss.
 
 ### 2. Geometry & Kinematics (deterministic)
-- **Homography projection** - Transform image coordinates `(u, v)` to 2D court-space `(x, y)` via a perspective matrix computed from court keypoints. Players are projected from the bottom of their bounding box (planar assumption), enabling accurate occupation heatmaps. Ball coordinates are only recorded at certified bounce moments (see audio) to avoid fictitious in-flight projections.
-
-  `[[x], [y], [1]] = c * H * [[u], [v], [1]]`
-
-- **Ball kinematics** - Velocity estimation from projected positions, smoothed by a **Kalman filter** to mitigate tracking jitter and interpolate micro-occlusions.
-- **The "Corde"** - Euclidean distance between partners over time, a key tactical indicator of defensive/offensive synchronization. Time-series analysis of this distance quantifies transition discipline (synchronized net approaches).
+- 🟢 **Homography projection** - Transform image coordinates `(u, v)` to 2D court-space `(x, y)` via a perspective matrix computed from an interactive 12-point calibration UI. It automatically rejects replays and zoom-in shots by detecting geometric mismatches.
+- 🟢 **HD Broadcast Dashboard** - Automatic side-by-side rendering of the HD video feed and a perfectly scaled 2D minimap with trajectory projections.
+- 🔴 **Ball kinematics** - Velocity estimation from projected positions, smoothed by a **Kalman filter** to mitigate tracking jitter and interpolate micro-occlusions.
+- 🔴 **The "Corde"** - Euclidean distance between partners over time, a key tactical indicator of defensive/offensive synchronization. Time-series analysis of this distance quantifies transition discipline (synchronized net approaches).
 
 ### 3. Multimodal Analysis & Generative Coaching
-- **Acoustic refereeing** - Millisecond-accurate bounce detection using a high-pass Butterworth filter (10 kHz, zero-phase) and EMA energy thresholding. Surface classification (glass vs. turf vs. racket) is handled by a fine-tuned **YAMNet-256** micro-CNN fed 50 ms Mel-spectrograms around each peak - far more reliable than raw YAMNet's 960 ms windows for impulsive 1-5 ms events.
-- **Virtual Coach** - 2D game events are translated into structured JSON and processed by a **local LLM** (e.g., Hermes 2 Pro / Qwen-JSON, 7-8B) with **constrained decoding** (Pydantic / JSON Schema), making syntactically invalid output mathematically impossible. Raw geometry is pre-translated into semantic spatial concepts ("transition zone", "net", "back court") before prompting, so the LLM reasons on interpretable context.
+- 🔴 **Acoustic refereeing** - Millisecond-accurate bounce detection using a high-pass Butterworth filter (10 kHz, zero-phase) and EMA energy thresholding. Surface classification (glass vs. turf vs. racket) is handled by a fine-tuned **YAMNet-256** micro-CNN fed 50 ms Mel-spectrograms around each peak - far more reliable than raw YAMNet's 960 ms windows for impulsive 1-5 ms events.
+- 🔴 **Virtual Coach** - 2D game events are translated into structured JSON and processed by a **local LLM** (e.g., Hermes 2 Pro / Qwen-JSON, 7-8B) with **constrained decoding** (Pydantic / JSON Schema), making syntactically invalid output mathematically impossible. Raw geometry is pre-translated into semantic spatial concepts ("transition zone", "net", "back court") before prompting, so the LLM reasons on interpretable context.
 
 ---
 
@@ -77,10 +78,11 @@ graph TD
 
 | Domain | Choice | Rationale |
 |---|---|---|
+| Pipeline Orchestration | **3-Pass Offline Batching** | Enables retrospective trajectory smoothing and geometric validation that is mathematically impossible in real-time. |
 | Ball detection | **TrackNetV5** (heatmaps, 3-frame window) | Survives motion blur & glass/mesh backgrounds where YOLO fails |
 | Stroke classification | **PoseC3D + RGB Early-Fusion** | Skeleton heatmaps capture biomechanics; RGB adds racket angle/effect - essential to separate *Bandeja* vs *Vibora* |
 | Pose estimation | **ViTPose-L** | Vision-Transformer based; superior to convolutional pose estimators on PadelTracker100 |
-| Court projection | **Homography (OpenCV)** + planar assumption | Deterministic, explainable; ball only projected at audio-certified bounces |
+| Court projection | **Homography (OpenCV)** + planar assumption | Deterministic, explainable; replays automatically rejected. |
 | Acoustic events | **2-stage: EMA peak + YAMNet-256** | Ball impacts are 1-5 ms; raw YAMNet's 960 ms window drowns the signal |
 | Tactical reports | **Local LLM + constrained decoding** | No regex parsing; Pydantic schema enforced at the token-distribution level |
 | Transfer learning | **FineBadminton -> Padel** | *Slice smash* biomechanics (decentered hit, wrist whip) share latent structure with *Vibora* |
@@ -92,35 +94,25 @@ graph TD
 ```text
 BandejAI/
 ├── vision/                         # Image processing & visual neural networks
-│   ├── ball_tracking/              # TrackNetV5 detection + 3-frame inference
-│   ├── player_tracking/            # YOLOv8 + ByteTrack identity tracking
-│   └── action_recognition/         # PoseC3D + RGB Early-Fusion classifier
-│
-├── audio/                          # Acoustic signal analysis & refereeing
-│   ├── peak_detection.py           # Butterworth high-pass + EMA thresholding
-│   └── classification.py           # YAMNet-256 surface (glass/turf/racket)
+│   ├── pipeline.py                 # Core 3-pass tracking orchestrator
+│   ├── visualization.py            # Dashboard rendering & 2D Mini-Map
+│   ├── scene_detection/            # PySceneDetect wrapper for rally extraction
+│   ├── player_tracking/            # YOLOv8 + ByteTrack + Trajectory Smoothing
+│   ├── ball_tracking/              # TrackNetV5 detection [TODO]
+│   └── action_recognition/         # PoseC3D + RGB Early-Fusion [TODO]
 │
 ├── core_math/                      # Deterministic geometry & kinematics
-│   ├── homography/projector.py     # H matrix computation & 2D projection
-│   └── kinematics/
-│       ├── kalman_filter.py        # Ball trajectory smoothing
-│       └── tactical_metrics.py     # Ball speed & the "Corde" metric
+│   ├── homography/                 # H matrix computation & 2D projection
+│   │   ├── projector.py            # Coordinate transformations
+│   │   └── calibration_ui.py       # Interactive 12-point mapping interface
+│   └── kinematics/                 # Ball trajectory & the "Corde" [TODO]
 │
-├── llm_coach/                      # Tactical report generation via local LLM
-│   ├── schemas/output_models.py    # Pydantic output validation
-│   └── generation/
-│       ├── prompt_templates.py     # 2D-metric -> tactical-semantics translation
-│       └── orchestrator.py         # Constrained-decoding LLM inference
+├── audio/                          # Acoustic signal analysis & refereeing [TODO]
+├── llm_coach/                      # Tactical report generation via local LLM [TODO]
 │
-├── utils/                          # Shared utilities
-│   ├── video_processor.py          # Read/write/resize video streams
-│   └── visualization.py            # Trajectories, 2D mini-map, heatmaps
-│
-├── notebooks/                      # Research & training experiments
-│   ├── transfer_learning_badminton.ipynb
-│   └── homography_calibration.ipynb
-│
-# (Internal specs are kept private; public documentation will live here in the future.)
+├── examples/                       # API usage snippets & standalone tutorials
+│   ├── api_tracking_example.py     # Minimal script to use the PlayerTracker natively
+│   └── demo_scene_detection.py     # Test utility for rally extraction
 │
 ├── main.py                         # Offline orchestrator (CLI)
 ├── requirements.txt                # Python dependencies
@@ -177,20 +169,57 @@ ruff check .            # should report no issues
 
 ## Quickstart
 
-Run the offline analysis pipeline on a recorded match:
+Run the offline analysis pipeline on a recorded match. You can provide a raw video, or pass a YAML configuration file to bypass the manual calibration and skip the automatic scene detection.
 
 ```bash
-python main.py --video_path path/to/match.mp4 --output_dir results/
+# Option 1: Full automated pipeline (Prompts for Homography Calibration UI)
+python main.py --video_path path/to/match.mp4 --output_dir outputs/v1/
+
+# Option 2: Using a pre-cached configuration (Fastest)
+python main.py --config data/sample_match_config.yaml --output_dir outputs/v1/
 ```
 
 The orchestrator will, in sequence:
-1. Prompt for **12 court keypoints** (manual homography initialization - see Roadmap Phase 1)
-2. Track players & ball, extract poses
-3. Extract audio & detect/classify bounces
-4. Classify strokes
-5. Generate a structured tactical report
+1. Detect rallies automatically using `PySceneDetect` (unless cached in config).
+2. Prompt for **12 court keypoints** for Homography (unless cached in config).
+3. Track players using YOLOv8 (1088p) and map them to the 2D court.
+4. Smooth trajectories and merge players to stable court slots.
+5. Export a high-quality MP4 Broadcast Dashboard for each rally.
 
-Outputs (in `results/`): 2D trajectories, heatmaps, stroke taxonomy, bounce log, and the LLM-generated coaching report (validated JSON + human-readable summary).
+### Using Configuration Files (YAML)
+
+To speed up repeated testing on the same video, you can cache the geometry and timestamps in a `.yaml` file. This bypasses both the manual UI calibration and the `PySceneDetect` processing time.
+
+```yaml
+video_path: "data/sample_match.mp4"
+points_mode: 12
+
+# 1. To get these points, run main.py once WITHOUT config.
+# The UI will prompt you to click the 12 court intersections.
+# Once calibrated, copy the `[[x, y], ...]` array printed in your console.
+image_points:
+  - [347.0, 715.0]
+  - [1573.0, 715.0]
+  # ...
+
+# 2. To get rally timestamps, run: 
+# python examples/demo_scene_detection.py --video your_video.mp4
+# Then copy the frame intervals [start_frame, end_frame] printed in the summary.
+rallies:
+  - [0, 338]
+  - [475, 1152]
+```
+
+### API Examples
+
+If you want to use the underlying classes programmatically, check the `examples/` directory:
+```bash
+# Minimal PlayerTracker example (No UI)
+python examples/api_tracking_example.py
+
+# Standalone Scene Detection testing
+python examples/demo_scene_detection.py --video data/sample_match.mp4.webm
+```
 
 ---
 
@@ -198,11 +227,11 @@ Outputs (in `results/`): 2D trajectories, heatmaps, stroke taxonomy, bounce log,
 
 | Phase | Goal | Status | Key Dependencies / Risks |
 |---|---|:---:|---|
-| **1. Spatial core & player tracking** | 2D positions, "Corde", basic heatmaps | next up | Homography instability if the camera moves - mitigated by manual 12-point UI at video start |
-| **2. Ball kinematic extraction** | Trajectory, speeds, parabola modeling | planned | TrackNet must be trained/adapted to padel glass & mesh; VRAM-intensive alongside YOLO |
-| **3. Acoustic refereeing** | ms-accurate bounce detection, surface classification | planned | Strict audio-video timestamp alignment required to trigger ball homography |
-| **4. Advanced action recognition** | *Bandeja*, *Vibora*, *Chiquita* classification | planned | Needs a transfer-learned mini-dataset from badminton foundations (FineBadminton) |
-| **5. Semantic analysis & LLM Coach** | Automated tactical feedback, highlight segmentation | planned | Output quality depends on the geometry-semantics translation before LLM prompting |
+| **1. Spatial core & player tracking** | 2D positions, automated rally extraction, UI dashboard | 🟢 **Done** | Core pipeline established and stable |
+| **2. Ball kinematic extraction** | Trajectory, speeds, parabola modeling | 🔴 **Next up** | TrackNet must be trained/adapted to padel glass & mesh; VRAM-intensive alongside YOLO |
+| **3. Acoustic refereeing** | ms-accurate bounce detection, surface classification | 🔴 **Planned** | Strict audio-video timestamp alignment required to trigger ball homography |
+| **4. Advanced action recognition** | *Bandeja*, *Vibora*, *Chiquita* classification | 🔴 **Planned** | Needs a transfer-learned mini-dataset from badminton foundations (FineBadminton) |
+| **5. Semantic analysis & LLM Coach** | Automated tactical feedback, highlight segmentation | 🔴 **Planned** | Output quality depends on the geometry-semantics translation before LLM prompting |
 
 ---
 
@@ -220,7 +249,7 @@ Licensed under the **Apache License, Version 2.0** - see [LICENSE](LICENSE).
 
 ## Acknowledgements & References
 
-This project builds on and adapts concepts from several open-source works and datasets.
+**BandejAI** is a custom-engineered ecosystem built from the ground up. However, state-of-the-art computer vision is a collaborative effort, and our architectural design draws inspiration from several foundational open-source works, research papers, and datasets.
 
 ### Reference repositories
 - **[DS_Padel](https://github.com/AlvaroNovillo/DS_Padel)** - YOLOv8 player detection, TrackNet ball tracking, homography integration
@@ -240,5 +269,3 @@ This project builds on and adapts concepts from several open-source works and da
 - YAMNet (Google AudioSet) - audio event detection foundation
 - Spin/impact sound analysis in racket sports (Sony AI, table-tennis spin detection)
 - Constrained decoding & structured LLM outputs (RL-Struct, Cohere, awesome-llm-json)
-
-A public bibliography will be provided in a future documentation release.

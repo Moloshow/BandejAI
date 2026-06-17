@@ -28,6 +28,10 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from config import settings
+from core_math.homography.calibration_ui import HomographyUI
+from core_math.homography.projector import CourtProjector
+from vision.pipeline import process_player_tracking
+from vision.scene_detection import RallyExtractor
 
 # --------------------------------------------------------------------------- #
 # Logging setup
@@ -60,8 +64,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--video_path",
         type=Path,
-        required=True,
         help="Path to the input match video file (.mp4, .avi, .mov).",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Path to YAML config with pre-calibrated points and rallies.",
     )
     parser.add_argument(
         "--output_dir",
@@ -90,27 +98,99 @@ def parse_args() -> argparse.Namespace:
 
 
 # --------------------------------------------------------------------------- #
-# Pipeline stubs (Phase 0 - to be implemented in subsequent phases)
+# Core Pipeline Phases
 # --------------------------------------------------------------------------- #
-def run_homography_init(video_path: Path) -> None:
-    """Prompt the user for 12 court keypoints and compute the homography matrix.
+# Global state to pass calibrated projector between phases
+_projector: CourtProjector | None = None
+_rallies: list[list[int]] = []
+
+
+def run_homography_init(video_path: Path, config_data: dict | None = None) -> None:
+    """Prompt the user for court keypoints and compute the homography matrix.
 
     Args:
-        video_path: Path to the input video (used to extract the first frame).
-
+        video_path: Path to the input video.
+        config_data: Optional dict loaded from YAML config.
     """
-    logger.info("[Phase 1] Homography initialization - TODO")
+    logger.info("[Phase 1] Homography initialization")
+    global _projector, _rallies
+
+    if config_data and "image_points" in config_data:
+        import numpy as np
+        logger.info("Loading homography calibration from config...")
+        _projector = CourtProjector()
+        image_points = np.array(config_data["image_points"], dtype=np.float64)
+        points_mode = config_data.get("points_mode", 12)
+        court_points = _projector.get_template(points_mode)
+        _projector.compute_homography(image_points, court_points)
+
+        if "rallies" in config_data:
+            _rallies = config_data["rallies"]
+            logger.info("Loaded %d rallies from config.", len(_rallies))
+        else:
+            logger.info("Extracting rallies using PySceneDetect...")
+            extractor = RallyExtractor(min_scene_length_sec=5.0)
+            scenes = extractor.extract_scenes(str(video_path))
+            _rallies = [[s[2], s[3]] for s in scenes]
+        return
+
+    # 1. Extract rallies first so we pick a good frame
+    logger.info("Extracting rallies using PySceneDetect...")
+    extractor = RallyExtractor(min_scene_length_sec=5.0)
+    scenes = extractor.extract_scenes(str(video_path))
+    _rallies = [[s[2], s[3]] for s in scenes]
+
+    if not _rallies:
+        logger.warning("No rallies detected! Falling back to full video.")
+        _rallies = [[0, float("inf")]]
+        calib_frame = 0
+    else:
+        calib_frame = _rallies[0][0]
+
+    import cv2
+    cap = cv2.VideoCapture(str(video_path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, calib_frame)
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret:
+        logger.error("Failed to read video for calibration.")
+        sys.exit(1)
+
+    ui = HomographyUI(frame, points_mode=12)
+    ui.run(auto_close=True)
+
+    if not ui.projector.is_calibrated:
+        logger.error("Calibration failed or aborted.")
+        sys.exit(1)
+
+    _projector = ui.projector
 
 
-def run_vision_pipeline(video_path: Path) -> None:
-    """Run player tracking, ball tracking, and pose estimation.
+def run_vision_pipeline(video_path: Path, output_dir: Path) -> None:
+    """Run player tracking pipeline.
 
     Args:
         video_path: Path to the input video file.
-
+        output_dir: Output directory.
     """
-    logger.info("[Phase 1-2] Vision pipeline (YOLO + TrackNet + ViTPose) - TODO")
+    logger.info("[Phase 1-2] Vision pipeline (YOLO + Tracking + Smoothing)")
+    global _projector, _rallies
 
+    if not _projector:
+        logger.error("Projector not calibrated! Cannot run vision pipeline.")
+        sys.exit(1)
+
+    process_player_tracking(
+        video_path=video_path,
+        rallies=_rallies,
+        projector=_projector,
+        output_dir=output_dir,
+        show_window=True
+    )
+
+
+# --- Pending Pipeline Stubs (To be implemented) ---
 
 def run_audio_pipeline(video_path: Path) -> None:
     """Extract audio and run acoustic refereeing (bounce detection + classification).
@@ -153,6 +233,20 @@ def main() -> int:
     settings.device = args.device
     settings.apply_seed()
     logger.info(f"BandejAI starting - seed={settings.seed}, device={settings.torch_device}")
+    # --- Config loading ---
+    config_data = None
+    if args.config:
+        import yaml
+        with open(args.config) as f:
+            config_data = yaml.safe_load(f)
+
+        if not args.video_path and "video_path" in config_data:
+            args.video_path = Path(config_data["video_path"])
+
+    if not args.video_path:
+        logger.error("--video_path is required if not specified in config.")
+        return 1
+
     logger.info(f"Input video: {args.video_path}")
     logger.info(f"Output dir:  {args.output_dir}")
 
@@ -163,8 +257,8 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Pipeline ---
-    run_homography_init(args.video_path)
-    run_vision_pipeline(args.video_path)
+    run_homography_init(args.video_path, config_data)
+    run_vision_pipeline(args.video_path, args.output_dir)
     if not args.skip_audio:
         run_audio_pipeline(args.video_path)
     run_action_recognition()
