@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core_math.homography.projector import CourtProjector  # noqa: E402
 from examples.demo_homography import HomographyDemo  # noqa: E402
-from vision.player_tracking import PlayerTracker  # noqa: E402
+from vision.player_tracking import PlayerMerger, PlayerTracker  # noqa: E402
 
 logger = logging.getLogger("bandejai.demo_tracking")
 
@@ -155,9 +155,10 @@ def main() -> None:
 
         projector = calibration_demo.projector
 
-    # 3. Initialize Tracker
-    logger.info("Initializing PlayerTracker...")
+    # 3. Initialize Tracker and Merger
+    logger.info("Initializing PlayerTracker and PlayerMerger...")
     tracker = PlayerTracker("yolov8n.pt")
+    merger = PlayerMerger(projector, max_lost_frames=60)
 
     # 4. Process Video
     window_main = "Player Tracking"
@@ -203,40 +204,49 @@ def main() -> None:
             boxes = results.boxes.xyxy.cpu().numpy()
             track_ids = results.boxes.id.cpu().numpy().astype(int)
 
-            for box, track_id in zip(boxes, track_ids, strict=False):
+            # --- SMART MERGING ---
+            slots = merger.update(boxes, track_ids)
+
+            for box, _track_id, slot in zip(boxes, track_ids, slots, strict=False):
+                if slot == -1:
+                    continue  # Ignore unassigned tracks (noise)
+
                 x1, y1, x2, y2 = box
-                color = colors[track_id % len(colors)]
+                # Define specific colors for the 4 slots:
+                # 0: Near Left (Red), 1: Near Right (Orange), 2: Far Left (Blue), 3: Far Right (Cyan)
+                slot_colors = [(0, 0, 255), (0, 165, 255), (255, 0, 0), (255, 255, 0)]
+                color = slot_colors[slot]
 
                 # Draw on main frame
                 cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
                 cv2.putText(
                     frame,
-                    f"ID: {track_id}",
+                    f"P{slot}",
                     (int(x1), int(y1) - 10),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    0.8,
                     color,
                     2,
                 )
 
                 # Draw bottom center on main frame
                 bc_x, bc_y = int((x1 + x2) / 2), int(y2)
-                cv2.circle(frame, (bc_x, bc_y), 4, (0, 0, 255), -1)
+                cv2.circle(frame, (bc_x, bc_y), 4, color, -1)
 
                 # Project to 2D
                 try:
                     court_pt = projector.project_bounding_box_bottom(box)
                     # Draw on minimap
                     mm_x, mm_y = court_to_img(court_pt[0], court_pt[1])
-                    cv2.circle(minimap, (mm_x, mm_y), 8, color, -1)
+                    cv2.circle(minimap, (mm_x, mm_y), 10, color, -1)
                     cv2.putText(
                         minimap,
-                        str(track_id),
-                        (mm_x - 5, mm_y - 12),
+                        f"P{slot}",
+                        (mm_x - 10, mm_y - 15),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
+                        0.6,
                         (255, 255, 255),
-                        1,
+                        2,
                     )
                 except RuntimeError:
                     pass
