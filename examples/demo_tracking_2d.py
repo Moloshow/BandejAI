@@ -102,6 +102,7 @@ def main() -> None:
         args.video = cfg.get("video_path", args.video)
         args.points = cfg.get("points_mode", args.points)
         image_points = np.array(cfg["image_points"], dtype=np.float64)
+        rallies = cfg.get("rallies", [])
 
         if not args.video:
             logger.error("No video_path found in config and --video not provided.")
@@ -130,14 +131,30 @@ def main() -> None:
             parser.print_help()
             sys.exit(1)
 
+        logger.info("No config provided. Running Scene Detection to find a perfect calibration frame...")
+        rallies = []
+        try:
+            from vision.scene_detection import RallyExtractor
+            extractor = RallyExtractor(min_scene_length_sec=5.0)
+            scenes = extractor.extract_scenes(args.video)
+            rallies = [[s[2], s[3]] for s in scenes]  # start_frame, end_frame
+        except ImportError:
+            logger.warning("scenedetect not installed. Pip install scenedetect to enable auto-rally extraction.")
+
+        if not rallies:
+            logger.warning("No rallies detected! Falling back to full video.")
+            rallies = [[0, float("inf")]]
+
         # 1. Read the specified frame for calibration
         cap = cv2.VideoCapture(args.video)
         if not cap.isOpened():
             logger.error("Cannot open video: %s", args.video)
             sys.exit(1)
 
-        if args.frame > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, args.frame)
+        # Use args.frame if provided, otherwise use the start of the first rally!
+        calib_frame = args.frame if args.frame > 0 else rallies[0][0]
+        if calib_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, calib_frame)
 
         ret, first_frame = cap.read()
         if not ret or first_frame is None:
@@ -145,7 +162,7 @@ def main() -> None:
             sys.exit(1)
 
         # 2. Run Homography Calibration
-        logger.info("Starting homography calibration...")
+        logger.info("Starting homography calibration on frame %d...", calib_frame)
         calibration_demo = HomographyDemo(first_frame, points_mode=args.points)
         calibration_demo.run(auto_close=True)
 
@@ -155,10 +172,9 @@ def main() -> None:
 
         projector = calibration_demo.projector
 
-    # 3. Initialize Tracker and Merger
-    logger.info("Initializing PlayerTracker and PlayerMerger...")
+    # 4. Initialize Tracker
+    logger.info("Initializing PlayerTracker...")
     tracker = PlayerTracker("yolov8n.pt")
-    merger = PlayerMerger(projector, max_lost_frames=60)
 
     # 4. Process Video
     window_main = "Player Tracking"
@@ -188,74 +204,87 @@ def main() -> None:
         (255, 0, 255), (0, 255, 255), (128, 0, 0), (0, 128, 0)
     ]
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    # Loop over all rallies
+    for i, (start_f, end_f) in enumerate(rallies):
+        logger.info("=== Playing Rally %d/%d (Frames %d -> %d) ===", i+1, len(rallies), start_f, end_f)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
 
-        # Track players
-        results = tracker.track_frame(frame, persist=True)
+        # Reset merger for a clean state per rally
+        merger = PlayerMerger(projector, max_lost_frames=60)
+        user_quit = False
 
-        # Base 2D map
-        minimap = create_birds_eye_view(projector, scale, margin)
+        while cap.get(cv2.CAP_PROP_POS_FRAMES) < end_f:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        # Draw results
-        if results.boxes is not None and results.boxes.id is not None:
-            boxes = results.boxes.xyxy.cpu().numpy()
-            track_ids = results.boxes.id.cpu().numpy().astype(int)
+            # Track players
+            results = tracker.track_frame(frame, persist=True)
 
-            # --- SMART MERGING ---
-            slots = merger.update(boxes, track_ids)
+            # Base 2D map
+            minimap = create_birds_eye_view(projector, scale, margin)
 
-            for box, _track_id, slot in zip(boxes, track_ids, slots, strict=False):
-                if slot == -1:
-                    continue  # Ignore unassigned tracks (noise)
+            # Draw results
+            if results.boxes is not None and results.boxes.id is not None:
+                boxes = results.boxes.xyxy.cpu().numpy()
+                track_ids = results.boxes.id.cpu().numpy().astype(int)
 
-                x1, y1, x2, y2 = box
-                # Define specific colors for the 4 slots:
-                # 0: Near Left (Red), 1: Near Right (Orange), 2: Far Left (Blue), 3: Far Right (Cyan)
-                slot_colors = [(0, 0, 255), (0, 165, 255), (255, 0, 0), (255, 255, 0)]
-                color = slot_colors[slot]
+                # --- SMART MERGING ---
+                slots = merger.update(boxes, track_ids)
 
-                # Draw on main frame
-                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-                cv2.putText(
-                    frame,
-                    f"P{slot}",
-                    (int(x1), int(y1) - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    color,
-                    2,
-                )
+                for box, _track_id, slot in zip(boxes, track_ids, slots, strict=False):
+                    if slot == -1:
+                        continue  # Ignore unassigned tracks (noise)
 
-                # Draw bottom center on main frame
-                bc_x, bc_y = int((x1 + x2) / 2), int(y2)
-                cv2.circle(frame, (bc_x, bc_y), 4, color, -1)
+                    x1, y1, x2, y2 = box
+                    # Define specific colors for the 4 slots:
+                    # 0: Near Left (Red), 1: Near Right (Orange), 2: Far Left (Blue), 3: Far Right (Cyan)
+                    slot_colors = [(0, 0, 255), (0, 165, 255), (255, 0, 0), (255, 255, 0)]
+                    color = slot_colors[slot]
 
-                # Project to 2D
-                try:
-                    court_pt = projector.project_bounding_box_bottom(box)
-                    # Draw on minimap
-                    mm_x, mm_y = court_to_img(court_pt[0], court_pt[1])
-                    cv2.circle(minimap, (mm_x, mm_y), 10, color, -1)
+                    # Draw on main frame
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
                     cv2.putText(
-                        minimap,
+                        frame,
                         f"P{slot}",
-                        (mm_x - 10, mm_y - 15),
+                        (int(x1), int(y1) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (255, 255, 255),
+                        0.8,
+                        color,
                         2,
                     )
-                except RuntimeError:
-                    pass
 
-        cv2.imshow(window_main, frame)
-        cv2.imshow(window_2d, minimap)
+                    # Draw bottom center on main frame
+                    bc_x, bc_y = int((x1 + x2) / 2), int(y2)
+                    cv2.circle(frame, (bc_x, bc_y), 4, color, -1)
 
-        # 30 ms delay, q to quit
-        if cv2.waitKey(30) & 0xFF == ord("q"):
+                    # Project to 2D
+                    try:
+                        court_pt = projector.project_bounding_box_bottom(box)
+                        # Draw on minimap
+                        mm_x, mm_y = court_to_img(court_pt[0], court_pt[1])
+                        cv2.circle(minimap, (mm_x, mm_y), 10, color, -1)
+                        cv2.putText(
+                            minimap,
+                            f"P{slot}",
+                            (mm_x - 10, mm_y - 15),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            (255, 255, 255),
+                            2,
+                        )
+                    except RuntimeError:
+                        pass
+
+            cv2.imshow(window_main, frame)
+            cv2.imshow(window_2d, minimap)
+
+            # 30 ms delay, q to quit
+            if cv2.waitKey(30) & 0xFF == ord("q"):
+                user_quit = True
+                break
+
+        if user_quit:
             break
 
     cap.release()

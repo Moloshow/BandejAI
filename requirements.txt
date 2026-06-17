@@ -37,6 +37,7 @@ transformers>=4.36.0        # Local LLM inference
 
 # --- Video & I/O ---
 ffmpeg-python>=0.2.0        # ffmpeg subprocess wrapper
+scenedetect>=0.6.0          # Video scene cut detection
 
 # --- Utilities ---
 tqdm>=4.66.0                # Progress bars
