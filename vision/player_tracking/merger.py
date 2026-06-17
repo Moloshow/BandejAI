@@ -118,10 +118,10 @@ class PlayerMerger:
             except RuntimeError:
                 continue  # Homography failed or uncalibrated
 
-            # Filter noise outside court margins (-2m to +2m roughly)
-            if not (-2 < cx < self.projector.COURT_WIDTH_M + 2):
+            # Filter noise outside court margins (-4m to +4m roughly)
+            if not (-4 < cx < self.projector.COURT_WIDTH_M + 4):
                 continue
-            if not (-2 < cy < self.projector.COURT_LENGTH_M + 2):
+            if not (-4 < cy < self.projector.COURT_LENGTH_M + 4):
                 continue
 
             side = self._get_side(cy)

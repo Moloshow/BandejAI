@@ -33,7 +33,7 @@ class PlayerTracker:
         self.model = YOLO(model_path)
 
     def track_frame(
-        self, frame: NDArray[np.uint8], persist: bool = True
+        self, frame: NDArray[np.uint8], persist: bool = True, conf: float = 0.10
     ) -> Results:
         """Track players in a single frame.
 
@@ -51,6 +51,8 @@ class PlayerTracker:
             classes=[0],
             tracker="bytetrack.yaml",
             persist=persist,
+            conf=conf,
+            imgsz=1088,
             verbose=False,
         )
         return results[0]
