@@ -125,7 +125,7 @@ def process_player_tracking(
         # --- PASS 2: SMOOTHING ---
         logger.info("Smoothing trajectories for Rally %d...", i + 1)
         smoothed_data = smoother.process_rally(rally_data)
-        ball_data = ball_smoother.process_rally(ball_data)
+        ball_data, ball_metadata = ball_smoother.process_rally(ball_data, return_metadata=True)
 
         # --- PASS 3: RENDERING ---
         logger.info("Playing/Rendering Rally %d...", i + 1)
@@ -180,6 +180,10 @@ def process_player_tracking(
                     "interpolated_frames": interp_ball_count,
                     "lost_frames": total_frames - len(smoothed_ball_set),
                     "tracking_uptime_pct": round((len(raw_ball_set) / total_frames) * 100, 2) if total_frames else 0,
+                    "hotspots_masked": ball_metadata.get("hotspots", []),
+                    "static_frames_dropped": ball_metadata.get("static_frames_dropped", 0),
+                    "outliers_dropped": ball_metadata.get("outliers_dropped", 0),
+                    "filter_actions": ball_metadata.get("filter_actions", []),
                     "detailed_gaps": ball_gaps
                 },
                 "players": {}

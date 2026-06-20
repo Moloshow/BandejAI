@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/bandejai_example.gif" alt="BandejAI HD Dashboard Example" width="800">
+  <img src="assets/bandejai_demo_v17.gif" alt="BandejAI HD Dashboard Example" width="800">
 </p>
 
 > **Status: Alpha.** The core 2D Player Tracking, Ball Tracking (TrackNetV5), and Homography pipeline are fully implemented. Advanced acoustic bounce detection is currently under development.
