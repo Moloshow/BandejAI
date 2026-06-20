@@ -151,7 +151,23 @@ class PlayerMerger:
                         assigned_slot = available[0]
                         logger.info("Assigned new track %d to slot %d", t_id, assigned_slot)
                     else:
-                        logger.warning("No available slot on %s side for track %d", side, t_id)
+                        # FORCE claim a slot that wasn't updated THIS frame
+                        # If a slot is occupied by a track that was NOT updated this frame (frames_since_update > 0),
+                        # it means the tracker lost them, so we just steal their slot!
+                        side_slots = [0, 1] if side == "near" else [2, 3]
+                        for s in side_slots:
+                            occupying_tid = self.slot_occupancy[s]
+                            if (occupying_tid is not None and 
+                                occupying_tid in self.tracks and 
+                                self.tracks[occupying_tid].frames_since_update > 0):
+                                # Steal the slot!
+                                assigned_slot = s
+                                del self.tracks[occupying_tid]
+                                logger.info("Track %d stole slot %d from stale track %d", t_id, assigned_slot, occupying_tid)
+                                break
+
+                        if assigned_slot is None:
+                            logger.warning("No available slot on %s side for track %d (likely noise)", side, t_id)
 
                 if assigned_slot is not None:
                     self.slot_occupancy[assigned_slot] = t_id

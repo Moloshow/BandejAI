@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 
 from core_math.homography.projector import CourtProjector
+from vision.ball_tracking.smoother import BallSmoother
 from vision.ball_tracking.tracker import BallTracker
 from vision.player_tracking.merger import PlayerMerger
 from vision.player_tracking.smoother import TrajectorySmoother
@@ -44,7 +46,10 @@ def process_player_tracking(
     tracker = PlayerTracker("yolov8n.pt")
     logger.info("Initializing BallTracker...")
     ball_tracker = BallTracker()
+
     smoother = TrajectorySmoother(max_gap_frames=60)
+    # PCHIP is safe enough to interpolate over 1.5 seconds (45 frames) of occlusion (e.g., passing behind the net)
+    ball_smoother = BallSmoother(max_gap_frames=45)
 
     window_main = "Padelytics Tracking Dashboard"
     if show_window:
@@ -113,9 +118,14 @@ def process_player_tracking(
             logger.warning("Rally %d rejected: Geometry mismatch (Replay/Zoom). Skipping...", i + 1)
             continue
 
+        # Save raw data to identify interpolated frames later
+        raw_rally_data = {d["frame_idx"]: d["tracks"] for d in rally_data}
+        raw_ball_data = ball_data.copy()
+
         # --- PASS 2: SMOOTHING ---
         logger.info("Smoothing trajectories for Rally %d...", i + 1)
         smoothed_data = smoother.process_rally(rally_data)
+        ball_data = ball_smoother.process_rally(ball_data)
 
         # --- PASS 3: RENDERING ---
         logger.info("Playing/Rendering Rally %d...", i + 1)
@@ -126,6 +136,68 @@ def process_player_tracking(
             out_dir = Path(output_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"rally_{i+1:03d}.mp4"
+            metrics_path = out_dir / f"rally_{i+1:03d}_metrics.json"
+
+            # --- METRICS COMPUTATION ---
+            raw_ball_set = set(raw_ball_data.keys())
+            smoothed_ball_set = set(ball_data.keys())
+            interp_ball_count = len(smoothed_ball_set - raw_ball_set)
+
+            # Analyze ball gaps for detailed telemetry
+            ball_gaps = []
+            if raw_ball_set:
+                sorted_ball_frames = sorted(raw_ball_set)
+                for j in range(len(sorted_ball_frames) - 1):
+                    f1 = sorted_ball_frames[j]
+                    f2 = sorted_ball_frames[j + 1]
+                    gap_len = f2 - f1 - 1
+                    if gap_len > 0:
+                        # Convert pixel positions to court coordinates if possible
+                        try:
+                            pt1 = projector.project_point(np.array(raw_ball_data[f1]))
+                            pt2 = projector.project_point(np.array(raw_ball_data[f2]))
+                            c_pos1 = {"x": round(float(pt1[0]), 2), "y": round(float(pt1[1]), 2)}
+                            c_pos2 = {"x": round(float(pt2[0]), 2), "y": round(float(pt2[1]), 2)}
+                        except RuntimeError:
+                            c_pos1 = {"x": None, "y": None}
+                            c_pos2 = {"x": None, "y": None}
+
+                        ball_gaps.append({
+                            "lost_at_frame": f1,
+                            "found_at_frame": f2,
+                            "duration_frames": gap_len,
+                            "last_seen_pixel": raw_ball_data[f1],
+                            "found_pixel": raw_ball_data[f2],
+                            "last_seen_court_2d": c_pos1,
+                            "found_court_2d": c_pos2
+                        })
+
+            rally_metrics = {
+                "rally_id": i + 1,
+                "total_frames": total_frames,
+                "ball": {
+                    "detected_frames": len(raw_ball_set),
+                    "interpolated_frames": interp_ball_count,
+                    "lost_frames": total_frames - len(smoothed_ball_set),
+                    "tracking_uptime_pct": round((len(raw_ball_set) / total_frames) * 100, 2) if total_frames else 0,
+                    "detailed_gaps": ball_gaps
+                },
+                "players": {}
+            }
+
+            for slot in range(4):
+                raw_count = sum(1 for f in raw_rally_data if slot in raw_rally_data[f])
+                smoothed_count = sum(1 for f in smoothed_data if slot in smoothed_data[f])
+                rally_metrics["players"][f"P{slot}"] = {
+                    "detected_frames": raw_count,
+                    "interpolated_frames": smoothed_count - raw_count,
+                    "lost_frames": total_frames - smoothed_count,
+                    "tracking_uptime_pct": round((raw_count / total_frames) * 100, 2) if total_frames else 0
+                }
+
+            with open(metrics_path, "w") as f:
+                json.dump(rally_metrics, f, indent=4)
+            logger.info("Saved metrics to %s", metrics_path)
 
             ret, frame = cap.read()
             if ret:
@@ -133,7 +205,9 @@ def process_player_tracking(
                 mm_h = int(projector.COURT_LENGTH_M * scale + margin * 2)
                 mm_w = int(projector.COURT_WIDTH_M * scale + margin * 2)
                 target_h = frame.shape[0]
-                target_mm_w = int(mm_w * (target_h / mm_h))
+                panel_h = 160
+                new_mm_h = target_h - panel_h
+                target_mm_w = int(mm_w * (new_mm_h / mm_h))
                 final_w = frame.shape[1] + target_mm_w
 
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -182,9 +256,46 @@ def process_player_tracking(
 
             target_h = frame.shape[0]
             mm_h, mm_w = minimap.shape[:2]
-            target_mm_w = int(mm_w * (target_h / mm_h))
-            minimap_resized = cv2.resize(minimap, (target_mm_w, target_h))
-            final_frame = np.hstack((frame, minimap_resized))
+            
+            # Create a status panel at the bottom of the minimap
+            panel_h = 160
+            new_mm_h = target_h - panel_h
+            target_mm_w = int(mm_w * (new_mm_h / mm_h))  # Preserve aspect ratio with new height
+            
+            minimap_resized = cv2.resize(minimap, (target_mm_w, new_mm_h))
+            panel = np.zeros((panel_h, target_mm_w, 3), dtype=np.uint8)
+
+            # Draw Status Header
+            cv2.putText(panel, "LIVE TRACKING STATUS", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.line(panel, (10, 40), (target_mm_w - 10, 40), (100, 100, 100), 1)
+
+            # Ball Status
+            ball_is_interp = f_idx in ball_data and f_idx not in raw_ball_data
+            if f_idx not in ball_data:
+                b_text, b_color = "BALL: Lost", (50, 50, 50)
+            elif ball_is_interp:
+                b_text, b_color = "BALL: Interpolated", (0, 165, 255) # Orange
+            else:
+                b_text, b_color = "BALL: Tracked", (0, 255, 0) # Green
+
+            cv2.putText(panel, b_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, b_color, 2)
+
+            # Players Status
+            if f_idx in smoothed_data:
+                for slot in smoothed_data[f_idx]:
+                    p_is_interp = slot not in raw_rally_data.get(f_idx, {})
+                    p_text = f"P{slot}: Interp" if p_is_interp else f"P{slot}: Tracked"
+                    p_color = (0, 165, 255) if p_is_interp else (0, 255, 0)
+
+                    row = slot // 2
+                    col = slot % 2
+                    px = 10 + col * int(target_mm_w / 2)
+                    py = 110 + row * 30
+                    cv2.putText(panel, p_text, (px, py), cv2.FONT_HERSHEY_SIMPLEX, 0.6, p_color, 1 if p_is_interp else 2)
+
+            # Stack minimap and panel
+            minimap_final = np.vstack((minimap_resized, panel))
+            final_frame = np.hstack((frame, minimap_final))
 
             if video_writer is not None:
                 video_writer.write(final_frame)
