@@ -8,6 +8,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
 from tqdm import tqdm
 
 from core_math.homography.projector import CourtProjector
@@ -17,8 +18,99 @@ from vision.player_tracking.merger import PlayerMerger
 from vision.player_tracking.smoother import TrajectorySmoother
 from vision.player_tracking.tracker import PlayerTracker
 from vision.visualization import court_to_img, create_birds_eye_view
+from vision.action_recognition.tube_extractor import ActionTubeExtractor
+from vision.action_recognition.pose_extractor import build_pose_extractor
 
 logger = logging.getLogger(__name__)
+
+# COCO skeleton connections for skeleton overlay drawing
+_SKELETON_EDGES = [
+    (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),  # arms
+    (5, 11), (6, 12), (11, 12),                 # torso
+    (11, 13), (13, 15), (12, 14), (14, 16),     # legs
+    (0, 5), (0, 6),                              # head-shoulders
+]
+
+
+def _draw_skeleton(frame: np.ndarray, keypoints: np.ndarray, confidence: np.ndarray,
+                   color: tuple = (0, 255, 128), threshold: float = 0.3) -> None:
+    """Draw skeleton keypoints and edges on a frame in-place."""
+    for j1, j2 in _SKELETON_EDGES:
+        if confidence[j1] > threshold and confidence[j2] > threshold:
+            p1 = (int(keypoints[j1, 0]), int(keypoints[j1, 1]))
+            p2 = (int(keypoints[j2, 0]), int(keypoints[j2, 1]))
+            cv2.line(frame, p1, p2, color, 2)
+    for j in range(len(keypoints)):
+        if confidence[j] > threshold:
+            cx, cy = int(keypoints[j, 0]), int(keypoints[j, 1])
+            cv2.circle(frame, (cx, cy), 4, (255, 255, 255), -1)
+            cv2.circle(frame, (cx, cy), 4, color, 1)
+
+
+def _render_loading_screen(
+    window: str,
+    phase_num: int,
+    phase_name: str,
+    rally_num: int,
+    total_rallies: int,
+    progress: float = 0.0,
+    detail: str = "",
+    device: str | None = None,
+) -> None:
+    """Draw a unified loading screen for all pipeline phases.
+
+    NOTE: cv2.putText does not support Unicode/accented characters on Windows.
+    All strings passed here must be plain ASCII.
+    """
+    canvas = np.zeros((400, 800, 3), dtype=np.uint8)
+    W = 800  # canvas width
+
+    # --- Phase pill ---
+    phase_colors = {1: (0, 220, 80), 2: (0, 165, 255), 3: (0, 220, 220)}
+    p_color = phase_colors.get(phase_num, (200, 200, 200))
+    cv2.rectangle(canvas, (30, 28), (150, 58), p_color, -1)
+    cv2.putText(canvas, f"PASS {phase_num}", (38, 51),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 2)
+
+    # --- Phase name ---
+    cv2.putText(canvas, phase_name, (165, 51),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2)
+
+    # --- Rally indicator ---
+    cv2.putText(canvas, f"Rally {rally_num} / {total_rallies}", (30, 93),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+
+    # --- Device badge ---
+    if device:
+        d_color = (0, 220, 80) if device.lower() == "cuda" else (0, 165, 255)
+        cv2.putText(canvas, f"Device: {device.upper()}", (540, 93),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, d_color, 1)
+
+    # --- Separator ---
+    cv2.line(canvas, (30, 108), (W - 30, 108), (60, 60, 60), 1)
+
+    # --- Progress bar (leave 70px on right for % label) ---
+    bar_x, bar_y, bar_h = 30, 148, 26
+    pct_label_w = 65  # reserved width for "100%" text
+    bar_w = W - 30 - bar_x - pct_label_w  # = 675
+    cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (40, 40, 40), -1)
+    filled = int(bar_w * max(0.0, min(1.0, progress)))
+    if filled > 0:
+        cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + filled, bar_y + bar_h), p_color, -1)
+    cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), 1)
+
+    # --- Percentage label (right of bar, always visible) ---
+    pct_text = f"{int(progress * 100)}%"
+    cv2.putText(canvas, pct_text, (bar_x + bar_w + 10, bar_y + 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (220, 220, 220), 2)
+
+    # --- Detail text ---
+    if detail:
+        cv2.putText(canvas, detail, (30, 210),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+
+    cv2.imshow(window, canvas)
+    cv2.waitKey(1)
 
 
 def process_player_tracking(
@@ -60,6 +152,11 @@ def process_player_tracking(
 
     user_quit = False
 
+    # Detect devices once for all passes
+    _inference_device = "cuda" if torch.cuda.is_available() else "cpu"  # YOLO, TrackNet, Pose
+    _cpu_device = "cpu"  # Smoothing is always numpy/pandas (CPU)
+    logger.info("Inference device: %s", _inference_device.upper())
+
     for i, (start_f, end_f) in enumerate(rallies):
         logger.info("=== Processing Rally %d/%d (Frames %d -> %d) ===", i + 1, len(rallies), start_f, end_f)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
@@ -72,7 +169,7 @@ def process_player_tracking(
 
         # --- PASS 1: TRACKING ---
         total_frames = end_f - start_f
-        pbar = tqdm(total=total_frames, desc=f"Tracking Rally {i+1}")
+        pbar = tqdm(total=total_frames, desc=f"Pass 1 - Tracking Rally {i+1}")
 
         while cap.get(cv2.CAP_PROP_POS_FRAMES) < end_f:
             f_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
@@ -81,8 +178,6 @@ def process_player_tracking(
                 break
 
             results = tracker.track_frame(frame, persist=True)
-            # update() returns (pos, target_idx) where target_idx is the newest
-            # frame (t) using [t, t-1, t-2] ordering to eliminate prediction lag.
             ball_pos, ball_frame_idx = ball_tracker.update(frame, f_idx)
             if ball_pos is not None and ball_frame_idx is not None:
                 ball_data[ball_frame_idx] = ball_pos
@@ -111,6 +206,15 @@ def process_player_tracking(
             rally_data.append(frame_dict)
             pbar.update(1)
 
+            if show_window and pbar.n % 5 == 0:
+                _render_loading_screen(
+                    window_main, 1, "Tracking & Detection",
+                    i + 1, len(rallies),
+                    progress=pbar.n / max(1, total_frames),
+                    detail=f"Frame {pbar.n} / {total_frames}",
+                    device=_inference_device,
+                )
+
         pbar.close()
 
         # Replay/Zoom rejection
@@ -124,6 +228,15 @@ def process_player_tracking(
 
         # --- PASS 2: SMOOTHING ---
         logger.info("Smoothing trajectories for Rally %d...", i + 1)
+        if show_window:
+            _render_loading_screen(
+                window_main, 2, "Smoothing & Filtering",
+                i + 1, len(rallies),
+                progress=0.5,
+                detail="PCHIP interpolation + Median filter...",
+                device=_cpu_device,
+            )
+
         smoothed_data = smoother.process_rally(rally_data)
         ball_data, ball_metadata = ball_smoother.process_rally(ball_data, return_metadata=True)
 
@@ -203,13 +316,94 @@ def process_player_tracking(
                 json.dump(rally_metrics, f, indent=4)
             logger.info("Saved metrics to %s", metrics_path)
 
+            # Export full trajectories for Phase 4 (Action Recognition)
+            trajectories_path = out_dir / f"rally_{i+1:03d}_trajectories.json"
+            trajectories_data = {
+                "ball": {int(k): [float(v[0]), float(v[1])] for k, v in ball_data.items()},
+                "players": {
+                    int(f_idx): {
+                        slot: {"bbox": [float(x) for x in data["bbox"]], "court_pt": [float(x) for x in data["court_pt"]]}
+                        for slot, data in frame_data.items()
+                    }
+                    for f_idx, frame_data in smoothed_data.items()
+                }
+            }
+            with open(trajectories_path, "w") as f:
+                json.dump(trajectories_data, f, indent=2)
+            logger.info("Saved full trajectories to %s", trajectories_path)
+
+            # --- Phase 4: Detect Stroke Events for Visualization ---
+            _tube_extractor = ActionTubeExtractor(fps=cap.get(cv2.CAP_PROP_FPS) or 25.0)
+            detected_hits = _tube_extractor.detect_hits(trajectories_path)
+            logger.info("Detected %d stroke events for overlay rendering.", len(detected_hits))
+            for h in detected_hits:
+                logger.info(
+                    "  Stroke @ Frame %d - Player P%s (Acc=%.1f px/f²)",
+                    h["hit_frame"], h["player_slot"], h["acceleration"]
+                )
+            # Build fast lookup: frame_idx -> hit metadata (for O(1) render-loop check)
+            hit_by_frame = {h["hit_frame"]: h for h in detected_hits}
+            # Build tube membership set: all frames within any action tube
+            tube_frames_map: dict[int, dict] = {}  # frame_idx -> hit metadata
+            for h in detected_hits:
+                for tf in range(h["tube_start"], h["tube_end"]):
+                    tube_frames_map[tf] = h
+
+            # --- PASS 3: POSE EXTRACTION ---
+            # Pre-compute ALL skeletons before the render loop so there is zero
+            # inference overhead during display. Render loop (Pass 4) becomes pure drawing.
+            _pose_device = _inference_device  # Same GPU as YOLO/TrackNet
+            logger.info("Extracting pose keypoints for Rally %d (Pass 3) on %s...", i + 1, _pose_device.upper())
+            _pose_extractor = build_pose_extractor(backend="yolo", device=_pose_device)
+
+            # skeleton_cache[frame_idx][slot] = (keypoints [17,2], confidence [17])
+            skeleton_cache: dict[int, dict] = {}
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+            pbar_pose = tqdm(total=total_frames, desc=f"Pass 3 - Pose Rally {i+1} [{_pose_device.upper()}]")
+
+            if show_window:
+                _render_loading_screen(
+                    window_main, 3, "Pose Extraction",
+                    i + 1, len(rallies),
+                    progress=0.0,
+                    detail="Initializing...",
+                    device=_pose_device,
+                )
+
+            while cap.get(cv2.CAP_PROP_POS_FRAMES) < end_f:
+                pf_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                ret, pose_frame = cap.read()
+                if not ret:
+                    break
+                if pf_idx in smoothed_data:
+                    skeleton_cache[pf_idx] = {}
+                    for slot, data in smoothed_data[pf_idx].items():
+                        pose_result = _pose_extractor.extract(pose_frame, data["bbox"])
+                        if pose_result is not None:
+                            skeleton_cache[pf_idx][slot] = pose_result
+                pbar_pose.update(1)
+
+                if show_window and pbar_pose.n % 10 == 0:
+                    _render_loading_screen(
+                        window_main, 3, "Pose Extraction",
+                        i + 1, len(rallies),
+                        progress=pbar_pose.n / max(1, total_frames),
+                        detail=f"Frame {pbar_pose.n} / {total_frames}",
+                        device=_pose_device,
+                    )
+            pbar_pose.close()
+            logger.info("Pass 3 complete: %d frames cached (%s).", len(skeleton_cache), _pose_device.upper())
+
+            # --- PASS 4: RENDERING ---
+            logger.info("Rendering Rally %d (Pass 4)...", i + 1)
+
             ret, frame = cap.read()
             if ret:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
                 mm_h = int(projector.COURT_LENGTH_M * scale + margin * 2)
                 mm_w = int(projector.COURT_WIDTH_M * scale + margin * 2)
                 target_h = frame.shape[0]
-                panel_h = 160
+                panel_h = 140
                 new_mm_h = target_h - panel_h
                 target_mm_w = int(mm_w * (new_mm_h / mm_h))
                 final_w = frame.shape[1] + target_mm_w
@@ -227,6 +421,11 @@ def process_player_tracking(
 
             minimap = create_birds_eye_view(projector, scale, margin)
 
+            # Phase 4: Check if this frame is an impact frame or inside an action tube
+            is_hit_frame = f_idx in hit_by_frame
+            active_tube = tube_frames_map.get(f_idx)
+            active_hitter_slot = int(active_tube["player_slot"]) if active_tube else None
+
             if f_idx in smoothed_data:
                 for slot, data in smoothed_data[f_idx].items():
                     x1, y1, x2, y2 = data["bbox"]
@@ -235,7 +434,9 @@ def process_player_tracking(
                     slot_colors = [(0, 0, 255), (0, 165, 255), (255, 0, 0), (255, 255, 0)]
                     color = slot_colors[slot]
 
-                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                    # Highlight the active hitter with a thicker box
+                    thickness = 4 if slot == active_hitter_slot else 2
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, thickness)
                     cv2.putText(frame, f"P{slot}", (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                     bc_x, bc_y = int((x1 + x2) / 2), int(y2)
                     cv2.circle(frame, (bc_x, bc_y), 4, color, -1)
@@ -243,6 +444,31 @@ def process_player_tracking(
                     mm_x, mm_y = court_to_img(cx, cy, projector, scale, margin)
                     cv2.circle(minimap, (mm_x, mm_y), 10, color, -1)
                     cv2.putText(minimap, f"P{slot}", (mm_x - 10, mm_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                    # Draw skeleton from pre-computed cache (zero inference overhead)
+                    frame_skeletons = skeleton_cache.get(f_idx, {})
+                    if slot in frame_skeletons:
+                        kp_xy, kp_conf = frame_skeletons[slot]
+                        if is_hit_frame and slot == active_hitter_slot:
+                            skel_color = (0, 0, 255)  # Red flash on hitter at impact
+                        else:
+                            skel_color = color  # Match player slot color
+                        _draw_skeleton(frame, kp_xy, kp_conf, color=skel_color)
+
+            # Flash overlay on exact impact frame (or up to 5 frames after)
+            recent_hit = None
+            for h_frame in range(max(0, f_idx - 5), f_idx + 1):
+                if h_frame in hit_by_frame:
+                    recent_hit = hit_by_frame[h_frame]
+                    break
+
+            if recent_hit:
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), 30)
+                cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+                cv2.putText(frame, f"STROKE  P{recent_hit['player_slot']}",
+                            (frame.shape[1] // 2 - 160, 80),
+                            cv2.FONT_HERSHEY_DUPLEX, 1.5, (0, 0, 255), 3)
 
             if f_idx in ball_data:
                 # 1. Draw the comet trail (connect past N frames)
@@ -289,27 +515,44 @@ def process_player_tracking(
             mm_h, mm_w = minimap.shape[:2]
             
             # Create a status panel at the bottom of the minimap
-            panel_h = 160
+            panel_h = 140
             new_mm_h = target_h - panel_h
             target_mm_w = int(mm_w * (new_mm_h / mm_h))  # Preserve aspect ratio with new height
             
             minimap_resized = cv2.resize(minimap, (target_mm_w, new_mm_h))
             panel = np.zeros((panel_h, target_mm_w, 3), dtype=np.uint8)
 
-            # Draw Status Header
-            cv2.putText(panel, "LIVE TRACKING STATUS", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.line(panel, (10, 40), (target_mm_w - 10, 40), (100, 100, 100), 1)
-
             # Ball Status
             ball_is_interp = f_idx in ball_data and f_idx not in raw_ball_data
             if f_idx not in ball_data:
                 b_text, b_color = "BALL: Lost", (50, 50, 50)
             elif ball_is_interp:
-                b_text, b_color = "BALL: Interpolated", (0, 165, 255) # Orange
+                b_text, b_color = "BALL: Interpolated", (0, 165, 255)
             else:
-                b_text, b_color = "BALL: Tracked", (0, 255, 0) # Green
+                b_text, b_color = "BALL: Tracked", (0, 255, 0)
+            cv2.putText(panel, b_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, b_color, 2)
 
-            cv2.putText(panel, b_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, b_color, 2)
+            # Stroke Event status (Phase 4)
+            past_hits = [h for h in detected_hits if h["hit_frame"] <= f_idx]
+            current_stroke_count = len(past_hits)
+            total_strokes = len(detected_hits)
+            last_hitter = f"P{past_hits[-1]['player_slot']}" if past_hits else "-"
+            
+            # Always show the stroke counter
+            count_text = f"Strokes: {current_stroke_count}/{total_strokes}  |  Last: {last_hitter}"
+            cv2.putText(panel, count_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (150, 150, 150), 2)
+            
+            # Show active event (if any) on a separate line
+            event_text = ""
+            if recent_hit:
+                event_text = f"STROKE  P{recent_hit['player_slot']}"
+                event_color = (0, 0, 255)
+            elif active_tube is not None:
+                event_text = f"Tube: P{active_tube['player_slot']} (pose active)"
+                event_color = (0, 165, 255)
+            
+            if event_text:
+                cv2.putText(panel, event_text, (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.55, event_color, 2)
 
             # Players Status
             if f_idx in smoothed_data:
@@ -321,7 +564,7 @@ def process_player_tracking(
                     row = slot // 2
                     col = slot % 2
                     px = 10 + col * int(target_mm_w / 2)
-                    py = 110 + row * 30
+                    py = 105 + row * 26
                     cv2.putText(panel, p_text, (px, py), cv2.FONT_HERSHEY_SIMPLEX, 0.6, p_color, 1 if p_is_interp else 2)
 
             # Stack minimap and panel
@@ -337,7 +580,9 @@ def process_player_tracking(
                 display_frame = cv2.resize(final_frame, (display_w, display_h))
                 cv2.imshow(window_main, display_frame)
 
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                wait_delay = max(1, int(1000 / fps))
+                if cv2.waitKey(wait_delay) & 0xFF == ord("q"):
                     user_quit = True
                     break
 

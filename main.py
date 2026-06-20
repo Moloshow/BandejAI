@@ -94,6 +94,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip LLM coaching report generation (geometry-only output).",
     )
+    parser.add_argument(
+        "--show_video",
+        action="store_true",
+        help="Display the video with tracked trajectories in real-time.",
+    )
     return parser.parse_args()
 
 
@@ -167,12 +172,13 @@ def run_homography_init(video_path: Path, config_data: dict | None = None) -> No
     _projector = ui.projector
 
 
-def run_vision_pipeline(video_path: Path, output_dir: Path) -> None:
+def run_vision_pipeline(video_path: Path, output_dir: Path, show_video: bool) -> None:
     """Run player tracking pipeline.
 
     Args:
         video_path: Path to the input video file.
         output_dir: Output directory.
+        show_video: Whether to display the video feed.
     """
     logger.info("[Phase 1-2] Vision pipeline (YOLO + Tracking + Smoothing)")
     global _projector, _rallies
@@ -186,7 +192,7 @@ def run_vision_pipeline(video_path: Path, output_dir: Path) -> None:
         rallies=_rallies,
         projector=_projector,
         output_dir=output_dir,
-        show_window=True
+        show_window=show_video
     )
 
 
@@ -258,7 +264,7 @@ def main() -> int:
 
     # --- Pipeline ---
     run_homography_init(args.video_path, config_data)
-    run_vision_pipeline(args.video_path, args.output_dir)
+    run_vision_pipeline(args.video_path, args.output_dir, args.show_video)
     if not args.skip_audio:
         run_audio_pipeline(args.video_path)
     run_action_recognition()
