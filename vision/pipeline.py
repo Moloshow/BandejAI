@@ -13,6 +13,7 @@ from core_math.homography.projector import CourtProjector
 from vision.player_tracking.merger import PlayerMerger
 from vision.player_tracking.smoother import TrajectorySmoother
 from vision.player_tracking.tracker import PlayerTracker
+from vision.ball_tracking.tracker import BallTracker
 from vision.visualization import court_to_img, create_birds_eye_view
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ def process_player_tracking(
 
     logger.info("Initializing PlayerTracker...")
     tracker = PlayerTracker("yolov8n.pt")
+    logger.info("Initializing BallTracker...")
+    ball_tracker = BallTracker()
     smoother = TrajectorySmoother(max_gap_frames=60)
 
     window_main = "Padelytics Tracking Dashboard"
@@ -55,9 +58,11 @@ def process_player_tracking(
     for i, (start_f, end_f) in enumerate(rallies):
         logger.info("=== Processing Rally %d/%d (Frames %d -> %d) ===", i + 1, len(rallies), start_f, end_f)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+        ball_tracker.reset()
 
         merger = PlayerMerger(projector, max_lost_frames=60)
         rally_data = []
+        ball_data = {}  # Store ball coordinates by frame index
         valid_detections = 0
 
         # --- PASS 1: TRACKING ---
@@ -71,6 +76,10 @@ def process_player_tracking(
                 break
 
             results = tracker.track_frame(frame, persist=True)
+            ball_pos = ball_tracker.update(frame)
+            if ball_pos:
+                ball_data[f_idx] = ball_pos
+
             frame_dict = {"frame_idx": f_idx, "tracks": {}}
 
             if results.boxes is not None and results.boxes.id is not None:
@@ -154,6 +163,20 @@ def process_player_tracking(
                     mm_x, mm_y = court_to_img(cx, cy, projector, scale, margin)
                     cv2.circle(minimap, (mm_x, mm_y), 10, color, -1)
                     cv2.putText(minimap, f"P{slot}", (mm_x - 10, mm_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            if f_idx in ball_data:
+                bx, by = ball_data[f_idx]
+                cv2.circle(frame, (bx, by), 6, (0, 255, 255), -1)  # Yellow circle
+                cv2.circle(frame, (bx, by), 8, (0, 0, 0), 2)  # Black border
+
+                try:
+                    # Project ball to minimap (assuming it is near the ground for now)
+                    court_pt = projector.project_point(np.array([bx, by]))
+                    mm_bx, mm_by = court_to_img(float(court_pt[0]), float(court_pt[1]), projector, scale, margin)
+                    cv2.circle(minimap, (mm_bx, mm_by), 6, (0, 255, 255), -1)
+                    cv2.circle(minimap, (mm_bx, mm_by), 8, (0, 0, 0), 2)
+                except RuntimeError:
+                    pass
 
             target_h = frame.shape[0]
             mm_h, mm_w = minimap.shape[:2]
