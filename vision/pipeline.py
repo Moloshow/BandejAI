@@ -241,9 +241,22 @@ def process_player_tracking(
                     cv2.putText(minimap, f"P{slot}", (mm_x - 10, mm_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             if f_idx in ball_data:
+                # 1. Draw the comet trail (connect past N frames)
+                trail_length = 12
+                for i in range(1, trail_length):
+                    f_curr = f_idx - i + 1
+                    f_prev = f_idx - i
+                    if f_curr in ball_data and f_prev in ball_data:
+                        pt1 = ball_data[f_curr]
+                        pt2 = ball_data[f_prev]
+                        # The trail gets thinner as it gets older
+                        thickness = max(1, int(5 * (1 - (i / trail_length))))
+                        cv2.line(frame, pt2, pt1, (0, 255, 255), thickness)
+
+                # 2. Draw the current ball position
                 bx, by = ball_data[f_idx]
-                cv2.circle(frame, (bx, by), 6, (0, 255, 255), -1)  # Yellow circle
-                cv2.circle(frame, (bx, by), 8, (0, 0, 0), 2)  # Black border
+                cv2.circle(frame, (bx, by), 5, (0, 255, 255), -1)  # Yellow circle
+                cv2.circle(frame, (bx, by), 7, (0, 0, 0), 2)  # Black border
 
                 try:
                     # Project ball to minimap (assuming it is near the ground for now)
