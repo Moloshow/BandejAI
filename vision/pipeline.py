@@ -248,9 +248,23 @@ def process_player_tracking(
                 try:
                     # Project ball to minimap (assuming it is near the ground for now)
                     court_pt = projector.project_point(np.array([bx, by]))
-                    mm_bx, mm_by = court_to_img(float(court_pt[0]), float(court_pt[1]), projector, scale, margin)
-                    cv2.circle(minimap, (mm_bx, mm_by), 6, (0, 255, 255), -1)
-                    cv2.circle(minimap, (mm_bx, mm_by), 8, (0, 0, 0), 2)
+                    
+                    # In Padel, the court is enclosed by glass at 10x20m.
+                    # A projection outside usually means Z > 0 (e.g., an airborne Lob).
+                    is_out = court_pt[0] < -0.5 or court_pt[0] > 10.5 or court_pt[1] < -0.5 or court_pt[1] > 20.5
+                    
+                    if is_out:
+                        # Clamp to the physical court boundary (the glass)
+                        clamped_x = np.clip(court_pt[0], 0.0, 10.0)
+                        clamped_y = np.clip(court_pt[1], 0.0, 20.0)
+                        mm_bx, mm_by = court_to_img(float(clamped_x), float(clamped_y), projector, scale, margin)
+                        
+                        # Draw as a hollow orange circle to signify "Airborne / Z-axis uncertainty"
+                        cv2.circle(minimap, (mm_bx, mm_by), 6, (0, 165, 255), 2)
+                    else:
+                        mm_bx, mm_by = court_to_img(float(court_pt[0]), float(court_pt[1]), projector, scale, margin)
+                        cv2.circle(minimap, (mm_bx, mm_by), 6, (0, 255, 255), -1)
+                        cv2.circle(minimap, (mm_bx, mm_by), 8, (0, 0, 0), 2)
                 except RuntimeError:
                     pass
 
