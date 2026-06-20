@@ -10,10 +10,10 @@ import numpy as np
 from tqdm import tqdm
 
 from core_math.homography.projector import CourtProjector
+from vision.ball_tracking.tracker import BallTracker
 from vision.player_tracking.merger import PlayerMerger
 from vision.player_tracking.smoother import TrajectorySmoother
 from vision.player_tracking.tracker import PlayerTracker
-from vision.ball_tracking.tracker import BallTracker
 from vision.visualization import court_to_img, create_birds_eye_view
 
 logger = logging.getLogger(__name__)
@@ -76,9 +76,11 @@ def process_player_tracking(
                 break
 
             results = tracker.track_frame(frame, persist=True)
-            ball_pos = ball_tracker.update(frame)
-            if ball_pos:
-                ball_data[f_idx] = ball_pos
+            # update() returns (pos, target_idx) where target_idx is the newest
+            # frame (t) using [t, t-1, t-2] ordering to eliminate prediction lag.
+            ball_pos, ball_frame_idx = ball_tracker.update(frame, f_idx)
+            if ball_pos is not None and ball_frame_idx is not None:
+                ball_data[ball_frame_idx] = ball_pos
 
             frame_dict = {"frame_idx": f_idx, "tracks": {}}
 
